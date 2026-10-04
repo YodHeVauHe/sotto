@@ -187,29 +187,29 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/account/eligibility", get(get_eligibility))
 }
 
-async fn get_eligibility(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> Result<Json<EligibilityView>> {
+/// Load the account-level eligibility view used by both the public discovery endpoint and the
+/// dormant human-action policy. Keeping the read in one function prevents a route from applying a
+/// different interpretation of billing or coverage than `/account/eligibility`.
+pub(crate) async fn load_view(state: &AppState, user_id: &str) -> Result<EligibilityView> {
     let account_initialized: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND public_key IS NOT NULL)",
     )
-    .bind(&user.user_id)
+    .bind(user_id)
     .fetch_one(&state.pool)
     .await?;
 
     if state.deployment_mode == DeploymentMode::SelfHosted {
-        return Ok(Json(evaluate_input(&EligibilityInput {
+        return Ok(evaluate_input(&EligibilityInput {
             deployment_mode: state.deployment_mode,
             billing_available: false,
             account_initialized,
             personal_billing_state: None,
             coverage: CoverageInput::Missing,
-        })));
+        }));
     }
 
     let mut tx = state.pool.begin().await?;
-    let personal = personal_billing::load_account(&mut tx, &user.user_id)
+    let personal = personal_billing::load_account(&mut tx, user_id)
         .await
         .map_err(|error| match error {
             personal_billing::PersonalBillingError::Database(error) => Error::Db(error),
@@ -217,7 +217,7 @@ async fn get_eligibility(
         })?;
     tx.commit().await?;
 
-    let coverage = match cloud_coverage_store::load(&state.pool, &user.user_id).await {
+    let coverage = match cloud_coverage_store::load(&state.pool, user_id).await {
         Ok(loaded) => {
             CoverageInput::Decision(evaluate(&loaded.coverage, epoch_now()).map_err(|error| {
                 Error::Internal(format!("stored coverage failed validation: {error}"))
@@ -229,7 +229,7 @@ async fn get_eligibility(
         Err(error) => return Err(Error::Internal(error.to_string())),
     };
 
-    let view = evaluate_input(&EligibilityInput {
+    Ok(evaluate_input(&EligibilityInput {
         deployment_mode: state.deployment_mode,
         billing_available: state
             .billing
@@ -238,8 +238,14 @@ async fn get_eligibility(
         account_initialized,
         personal_billing_state: personal.as_ref().map(|account| account.state),
         coverage,
-    });
-    Ok(Json(view))
+    }))
+}
+
+async fn get_eligibility(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<EligibilityView>> {
+    Ok(Json(load_view(&state, &user.user_id).await?))
 }
 
 fn epoch_now() -> i64 {

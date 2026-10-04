@@ -29,6 +29,8 @@ pub mod billing_operations;
 pub mod billing_refunds;
 #[doc(hidden)]
 pub mod billing_transfers;
+#[doc(hidden)]
+pub mod cloud_action_policy;
 pub mod cloud_coverage;
 pub mod cloud_coverage_reconciliation;
 pub mod cloud_coverage_store;
@@ -101,6 +103,7 @@ pub mod state;
 pub mod sync;
 pub mod telemetry;
 
+use axum::middleware;
 use axum::Router;
 
 use crate::state::AppState;
@@ -138,5 +141,12 @@ pub fn app(state: AppState) -> Router {
         .merge(org_deletion_metrics::router())
         .merge(org_deletion_ops::router())
         .merge(organisation_deletion)
+        // Human hosted action checks are shadow-only in this slice. The middleware records
+        // would-deny decisions while existing ACL, grant, lifecycle, and export responses remain
+        // unchanged until the later activation gate.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            cloud_action_policy::shadow,
+        ))
         .with_state(state)
 }
