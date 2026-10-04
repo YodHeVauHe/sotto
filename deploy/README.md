@@ -52,6 +52,11 @@ curl -fsS https://<your-domain>/server/info
 The response is safe to expose publicly and reports the deployment mode plus the current
 entitlement model. Stripe configuration must be paired with `cloud`; the mode remains an explicit operator setting.
 
+Human hosted action checks are shadow-only by default. They record would-deny decisions while
+existing ACL, grant, lifecycle, and export responses remain unchanged. Do not set
+`SOTTO_CLOUD_ACTION_ENFORCEMENT=1` until the Cloud transition and export gates have been
+rehearsed and approved.
+
 Database migrations run automatically on server boot. Pin a released version with
 `SOTTO_IMAGE_TAG=vX.Y.Z` in `.env` (default: `latest`). To build everything from source instead -
 for unreleased changes, or if you'd rather not trust prebuilt images - use

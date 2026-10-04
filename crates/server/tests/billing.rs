@@ -38,6 +38,7 @@ fn app(pool: PgPool, configured: bool) -> Router {
     let state = AppState {
         deployment_mode: sotto_server::config::DeploymentMode::SelfHosted,
         telemetry_ingest: false,
+        cloud_action_enforcement_enabled: false,
         pool,
         oauth: None,
         oauth_config: None,
@@ -109,6 +110,7 @@ fn app_with_provider(pool: PgPool, provider: Arc<dyn SubscriptionProvider>) -> R
     let state = AppState {
         deployment_mode: sotto_server::config::DeploymentMode::SelfHosted,
         telemetry_ingest: false,
+        cloud_action_enforcement_enabled: false,
         pool,
         oauth: None,
         oauth_config: None,

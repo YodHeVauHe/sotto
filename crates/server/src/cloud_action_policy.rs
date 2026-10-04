@@ -8,7 +8,7 @@
 use axum::extract::{Request, State};
 use axum::http::Method;
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
 use crate::auth::session;
 use crate::auth::AuthUser;
@@ -161,9 +161,21 @@ pub async fn shadow(State(state): State<AppState>, mut request: Request, next: N
                                 "cloud action shadow denial: action={action:?} state={:?}",
                                 view.state
                             );
+                            if state.cloud_action_enforcement_enabled {
+                                return crate::error::Error::CloudEligibility(
+                                    "hosted eligibility is required for this action".into(),
+                                )
+                                .into_response();
+                            }
                         }
                         Err(error) => {
                             eprintln!("cloud action eligibility unavailable: {error}");
+                            if state.cloud_action_enforcement_enabled {
+                                return crate::error::Error::CloudEligibility(
+                                    "hosted eligibility is unavailable".into(),
+                                )
+                                .into_response();
+                            }
                         }
                         _ => {}
                     }
@@ -202,10 +214,7 @@ mod tests {
         );
         assert_eq!(classify(&Method::POST, "/orgs/acme/billing/checkout"), None);
         assert_eq!(classify(&Method::GET, "/orgs/acme/entitlements"), None);
-        assert_eq!(
-            classify(&Method::POST, "/orgs/acme/deletion/cancel"),
-            None
-        );
+        assert_eq!(classify(&Method::POST, "/orgs/acme/deletion/cancel"), None);
         assert_eq!(classify(&Method::GET, "/shares/token"), None);
     }
 
