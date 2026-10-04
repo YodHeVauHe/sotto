@@ -48,9 +48,10 @@ pub enum ShadowDecision {
 /// unavailable, which is fail-closed only when the explicit rollout switch is enabled.
 pub fn enforcement_message(
     enforcement_enabled: bool,
+    action: ActionClass,
     decision: Option<ShadowDecision>,
 ) -> Option<&'static str> {
-    if !enforcement_enabled {
+    if !enforcement_enabled || is_always_available(action) {
         return None;
     }
     match decision {
@@ -58,6 +59,16 @@ pub fn enforcement_message(
         Some(ShadowDecision::WouldDeny) => Some("hosted eligibility is required for this action"),
         None => Some("hosted eligibility is unavailable"),
     }
+}
+
+fn is_always_available(action: ActionClass) -> bool {
+    matches!(
+        action,
+        ActionClass::AccountBootstrap
+            | ActionClass::AccountRead
+            | ActionClass::AccountReset
+            | ActionClass::SecurityControl
+    )
 }
 
 /// Classify the human routes covered by this slice. Provider billing, machine access, free share
@@ -89,15 +100,15 @@ pub fn classify(method: &Method, path: &str) -> Option<ActionClass> {
         };
     }
     if path.starts_with("/orgs/") {
+        let route = path
+            .strip_prefix("/orgs/")
+            .and_then(|remainder| remainder.split('/').nth(1));
         // Billing, eligibility discovery, and deletion/exit controls have their own contracts and
         // must remain reachable while a person is free, expired, or exporting.
-        if path.contains("/billing/")
-            || path.ends_with("/entitlements")
-            || path.contains("/deletion")
-        {
+        if matches!(route, Some("billing" | "entitlements" | "deletion")) {
             return None;
         }
-        if path.ends_with("/audit") {
+        if route == Some("audit") {
             return (method == Method::GET).then_some(ActionClass::AuditRead);
         }
         return match *method {
@@ -116,7 +127,16 @@ pub fn classify(method: &Method, path: &str) -> Option<ActionClass> {
     if path.starts_with("/environments/") {
         // Machine-token lifecycle has its own accountable-beneficiary contract and is intentionally
         // outside this human-action slice.
-        if path.split('/').any(|segment| segment == "tokens") {
+        let mut segments = path
+            .strip_prefix("/environments/")
+            .into_iter()
+            .flat_map(|remainder| remainder.split('/'));
+        let _environment_id = segments.next();
+        let is_machine_token_route = matches!(
+            (segments.next(), segments.next(), segments.next()),
+            (Some("tokens"), None, None) | (Some("tokens"), Some(_), None)
+        );
+        if is_machine_token_route {
             return None;
         }
         if path.ends_with("/grant") || path.ends_with("/grants") {
@@ -184,6 +204,7 @@ pub async fn shadow(State(state): State<AppState>, mut request: Request, next: N
                             );
                             if let Some(message) = enforcement_message(
                                 state.cloud_action_enforcement_enabled,
+                                action,
                                 Some(ShadowDecision::WouldDeny),
                             ) {
                                 return crate::error::Error::CloudEligibility(message.into())
@@ -192,9 +213,11 @@ pub async fn shadow(State(state): State<AppState>, mut request: Request, next: N
                         }
                         Err(error) => {
                             eprintln!("cloud action eligibility unavailable: {error}");
-                            if let Some(message) =
-                                enforcement_message(state.cloud_action_enforcement_enabled, None)
-                            {
+                            if let Some(message) = enforcement_message(
+                                state.cloud_action_enforcement_enabled,
+                                action,
+                                None,
+                            ) {
                                 return crate::error::Error::CloudEligibility(message.into())
                                     .into_response();
                             }
@@ -237,10 +260,26 @@ mod tests {
         assert_eq!(classify(&Method::POST, "/orgs/acme/billing/checkout"), None);
         assert_eq!(classify(&Method::GET, "/orgs/acme/entitlements"), None);
         assert_eq!(classify(&Method::POST, "/orgs/acme/deletion/cancel"), None);
+        assert_eq!(
+            classify(&Method::GET, "/orgs/billing/members"),
+            Some(ActionClass::OrganisationRead)
+        );
+        assert_eq!(
+            classify(&Method::POST, "/orgs/deletion/members"),
+            Some(ActionClass::OrganisationWrite)
+        );
+        assert_eq!(
+            classify(&Method::GET, "/orgs/entitlements/members"),
+            Some(ActionClass::OrganisationRead)
+        );
         assert_eq!(classify(&Method::GET, "/environments/e1/tokens"), None);
         assert_eq!(
             classify(&Method::DELETE, "/environments/e1/tokens/t1"),
             None
+        );
+        assert_eq!(
+            classify(&Method::GET, "/environments/tokens/secrets"),
+            Some(ActionClass::SecretRead)
         );
         assert_eq!(classify(&Method::GET, "/shares/token"), None);
     }
@@ -268,20 +307,36 @@ mod tests {
     #[test]
     fn enforcement_is_opt_in_and_unavailable_is_fail_closed_when_enabled() {
         assert_eq!(
-            enforcement_message(false, Some(ShadowDecision::WouldDeny)),
+            enforcement_message(
+                false,
+                ActionClass::ProjectRead,
+                Some(ShadowDecision::WouldDeny)
+            ),
             None
         );
         assert_eq!(
-            enforcement_message(true, Some(ShadowDecision::Allowed)),
+            enforcement_message(
+                true,
+                ActionClass::ProjectRead,
+                Some(ShadowDecision::Allowed)
+            ),
             None
         );
         assert_eq!(
-            enforcement_message(true, Some(ShadowDecision::WouldDeny)),
+            enforcement_message(
+                true,
+                ActionClass::ProjectRead,
+                Some(ShadowDecision::WouldDeny)
+            ),
             Some("hosted eligibility is required for this action")
         );
         assert_eq!(
-            enforcement_message(true, None),
+            enforcement_message(true, ActionClass::ProjectRead, None),
             Some("hosted eligibility is unavailable")
+        );
+        assert_eq!(
+            enforcement_message(true, ActionClass::AccountRead, None),
+            None
         );
     }
 }
