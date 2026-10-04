@@ -592,12 +592,4 @@ mod tests {
         assert!(!feature_flag_is_enabled(Some(" 1 ")));
         assert!(feature_flag_is_enabled(Some("1")));
     }
-
-    #[test]
-    fn cloud_action_enforcement_is_opt_in() {
-        assert!(!feature_flag_is_enabled(None));
-        assert!(!feature_flag_is_enabled(Some("true")));
-        assert!(!feature_flag_is_enabled(Some(" 1 ")));
-        assert!(feature_flag_is_enabled(Some("1")));
-    }
 }

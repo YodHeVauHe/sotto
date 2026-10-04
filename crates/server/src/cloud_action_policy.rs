@@ -44,6 +44,22 @@ pub enum ShadowDecision {
     WouldDeny,
 }
 
+/// Convert a shadow observation into an enforcement message. `None` means the eligibility read was
+/// unavailable, which is fail-closed only when the explicit rollout switch is enabled.
+pub fn enforcement_message(
+    enforcement_enabled: bool,
+    decision: Option<ShadowDecision>,
+) -> Option<&'static str> {
+    if !enforcement_enabled {
+        return None;
+    }
+    match decision {
+        Some(ShadowDecision::Allowed) => None,
+        Some(ShadowDecision::WouldDeny) => Some("hosted eligibility is required for this action"),
+        None => Some("hosted eligibility is unavailable"),
+    }
+}
+
 /// Classify the human routes covered by this slice. Provider billing, machine access, free share
 /// links, and operational endpoints are deliberately absent; they have separate lifecycle and
 /// rollout contracts.
@@ -98,6 +114,11 @@ pub fn classify(method: &Method, path: &str) -> Option<ActionClass> {
         };
     }
     if path.starts_with("/environments/") {
+        // Machine-token lifecycle has its own accountable-beneficiary contract and is intentionally
+        // outside this human-action slice.
+        if path.split('/').any(|segment| segment == "tokens") {
+            return None;
+        }
         if path.ends_with("/grant") || path.ends_with("/grants") {
             return match *method {
                 Method::GET => Some(ActionClass::GrantRead),
@@ -161,20 +182,21 @@ pub async fn shadow(State(state): State<AppState>, mut request: Request, next: N
                                 "cloud action shadow denial: action={action:?} state={:?}",
                                 view.state
                             );
-                            if state.cloud_action_enforcement_enabled {
-                                return crate::error::Error::CloudEligibility(
-                                    "hosted eligibility is required for this action".into(),
-                                )
-                                .into_response();
+                            if let Some(message) = enforcement_message(
+                                state.cloud_action_enforcement_enabled,
+                                Some(ShadowDecision::WouldDeny),
+                            ) {
+                                return crate::error::Error::CloudEligibility(message.into())
+                                    .into_response();
                             }
                         }
                         Err(error) => {
                             eprintln!("cloud action eligibility unavailable: {error}");
-                            if state.cloud_action_enforcement_enabled {
-                                return crate::error::Error::CloudEligibility(
-                                    "hosted eligibility is unavailable".into(),
-                                )
-                                .into_response();
+                            if let Some(message) =
+                                enforcement_message(state.cloud_action_enforcement_enabled, None)
+                            {
+                                return crate::error::Error::CloudEligibility(message.into())
+                                    .into_response();
                             }
                         }
                         _ => {}
@@ -215,6 +237,11 @@ mod tests {
         assert_eq!(classify(&Method::POST, "/orgs/acme/billing/checkout"), None);
         assert_eq!(classify(&Method::GET, "/orgs/acme/entitlements"), None);
         assert_eq!(classify(&Method::POST, "/orgs/acme/deletion/cancel"), None);
+        assert_eq!(classify(&Method::GET, "/environments/e1/tokens"), None);
+        assert_eq!(
+            classify(&Method::DELETE, "/environments/e1/tokens/t1"),
+            None
+        );
         assert_eq!(classify(&Method::GET, "/shares/token"), None);
     }
 
@@ -235,6 +262,26 @@ mod tests {
         assert_eq!(
             decide(ActionClass::ProjectWrite, EligibilityState::RenewalRecovery),
             ShadowDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn enforcement_is_opt_in_and_unavailable_is_fail_closed_when_enabled() {
+        assert_eq!(
+            enforcement_message(false, Some(ShadowDecision::WouldDeny)),
+            None
+        );
+        assert_eq!(
+            enforcement_message(true, Some(ShadowDecision::Allowed)),
+            None
+        );
+        assert_eq!(
+            enforcement_message(true, Some(ShadowDecision::WouldDeny)),
+            Some("hosted eligibility is required for this action")
+        );
+        assert_eq!(
+            enforcement_message(true, None),
+            Some("hosted eligibility is unavailable")
         );
     }
 }
