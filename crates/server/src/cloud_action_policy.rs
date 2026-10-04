@@ -71,6 +71,18 @@ fn is_always_available(action: ActionClass) -> bool {
     )
 }
 
+fn is_export_read(action: ActionClass) -> bool {
+    matches!(
+        action,
+        ActionClass::OrganisationRead
+            | ActionClass::AuditRead
+            | ActionClass::ProjectRead
+            | ActionClass::EnvironmentRead
+            | ActionClass::GrantRead
+            | ActionClass::SecretRead
+    )
+}
+
 /// Classify the human routes covered by this slice. Provider billing, machine access, free share
 /// links, and operational endpoints are deliberately absent; they have separate lifecycle and
 /// rollout contracts.
@@ -174,6 +186,7 @@ pub fn decide(action: ActionClass, state: EligibilityState) -> ShadowDecision {
             | ActionClass::SecurityControl
     );
     if always_available
+        || (state == EligibilityState::ExportOnly && is_export_read(action))
         || matches!(
             state,
             EligibilityState::Paid | EligibilityState::RenewalRecovery
@@ -296,6 +309,18 @@ mod tests {
         );
         assert_eq!(
             decide(ActionClass::ProjectRead, EligibilityState::Free),
+            ShadowDecision::WouldDeny
+        );
+        assert_eq!(
+            decide(ActionClass::ProjectRead, EligibilityState::ExportOnly),
+            ShadowDecision::Allowed
+        );
+        assert_eq!(
+            decide(ActionClass::AuditRead, EligibilityState::ExportOnly),
+            ShadowDecision::Allowed
+        );
+        assert_eq!(
+            decide(ActionClass::ProjectWrite, EligibilityState::ExportOnly),
             ShadowDecision::WouldDeny
         );
         assert_eq!(
